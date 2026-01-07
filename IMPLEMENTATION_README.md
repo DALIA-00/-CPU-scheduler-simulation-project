@@ -2,15 +2,23 @@
 
 C++ implementations of a CPU scheduling system with deadlock detection and recovery for Operating Systems course (ENCS3390).
 
-## Two Versions Available
+## Three Versions Available
 
-### 1. **simple_scheduler.cpp** (RECOMMENDED FOR STUDENTS)
+### 1. **student_scheduler.cpp** (⭐ MOST RECOMMENDED FOR BEGINNERS)
+- ✅ **No enums** - Uses simple const strings instead
+- ✅ **No size_t** - Uses int for all sizes
+- ✅ **No to_string** - Custom intToStr() function
+- ✅ **Very basic C++** - Only fundamental features
+- ✅ **Human-readable** - Easy variable names and logic
+- ✅ **Single file** - All code in one place
+
+### 2. **simple_scheduler.cpp** (RECOMMENDED FOR STUDENTS)
 - ✅ **No OOP** - Uses simple structs and functions only
 - ✅ **Single file** - All code in one .cpp file
 - ✅ **Easy to understand** - Procedural programming style
 - ✅ **Well commented** - Clear explanation of each section
 
-### 2. **scheduler_simulation.cpp** (Advanced)
+### 3. **scheduler_simulation.cpp** (Advanced)
 - Uses classes and OOP principles
 - More modular structure
 - Better for larger projects
@@ -28,7 +36,12 @@ C++ implementations of a CPU scheduling system with deadlock detection and recov
 
 ## Compilation
 
-**Simple version (recommended):**
+**Student version (most beginner-friendly):**
+```bash
+g++ -o student_scheduler student_scheduler.cpp -std=c++11
+```
+
+**Simple version (recommended for students):**
 ```bash
 g++ -o simple_scheduler simple_scheduler.cpp -std=c++11
 ```
@@ -40,6 +53,13 @@ g++ -o scheduler scheduler_simulation.cpp -std=c++11
 
 ## Usage
 
+**Student version (most beginner-friendly):**
+```bash
+./student_scheduler test_simple.txt
+./student_scheduler input_no_deadlock.txt
+./student_scheduler input_with_deadlock.txt
+```
+
 **Simple version:**
 ```bash
 ./simple_scheduler test_simple.txt
@@ -48,11 +68,6 @@ g++ -o scheduler scheduler_simulation.cpp -std=c++11
 ```
 
 **Advanced version:**
-```bash
-./scheduler
-```
-
-Run with specific input file:
 ```bash
 ./scheduler input_no_deadlock.txt
 ./scheduler input_with_deadlock.txt
