@@ -1,0 +1,783 @@
+================================================================================
+  COMPLETE CPU SCHEDULER SIMULATION - SIMPLE VERSION (NO OOP)
+  File: simple_scheduler.cpp
+  Size: 735 lines
+================================================================================
+
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
+#include <queue>
+#include <map>
+#include <algorithm>
+
+using namespace std;
+
+// ==================== SIMPLE DATA STRUCTURES ====================
+
+struct Operation {
+    string type;      // "EXEC", "REQUEST", "RELEASE"
+    int resourceID;
+    int amount;
+    int duration;
+};
+
+struct Burst {
+    bool isCPU;
+    vector<Operation> operations;
+};
+
+struct Process {
+    int pid;
+    int arrivalTime;
+    int priority;
+    int originalPriority;
+    string state;  // "NEW", "READY", "RUNNING", "WAITING", "IO", "TERMINATED"
+
+    vector<Burst> bursts;
+    int currentBurstIndex;
+    int currentOperationIndex;
+    int remainingTime;
+
+    int timeInReadyQueue;
+    int startTime;
+    int completionTime;
+
+    map<int, int> heldResources;  // resourceID -> amount
+    int waitingForResource;
+    int waitingForAmount;
+};
+
+struct Resource {
+    int totalInstances;
+    int availableInstances;
+};
+
+struct GanttEntry {
+    int pid;
+    int startTime;
+    int endTime;
+};
+
+// ==================== GLOBAL VARIABLES ====================
+
+map<int, Resource> resources;
+vector<Process> processes;
+vector<int> readyQueue;
+vector<int> ioQueue;
+vector<int> waitingQueue;
+int currentProcess = -1;
+int currentTime = 0;
+vector<GanttEntry> ganttChart;
+const int TIME_QUANTUM = 10;
+const int AGING_THRESHOLD = 10;
+
+// ==================== HELPER FUNCTIONS ====================
+
+void printProcess(int pid) {
+    cout << "[Time " << currentTime << "] P" << pid
+         << " (Priority " << processes[pid].priority << ")" << endl;
+}
+
+// ==================== DEADLOCK DETECTION ====================
+
+bool canProcessProceed(int pid, map<int, Resource>& tempRes) {
+    Process& p = processes[pid];
+    if (p.waitingForResource == -1) return true;
+
+    return tempRes[p.waitingForResource].availableInstances >= p.waitingForAmount;
+}
+
+bool detectDeadlock(vector<int>& deadlockedPIDs) {
+    if (waitingQueue.empty()) return false;
+
+    // Try to find processes that can proceed
+    map<int, Resource> tempRes = resources;
+    vector<int> remaining = waitingQueue;
+    bool progress = true;
+
+    while (progress && !remaining.empty()) {
+        progress = false;
+        vector<int> newRemaining;
+
+        for (int pid : remaining) {
+            if (canProcessProceed(pid, tempRes)) {
+                // This process can proceed
+                progress = true;
+
+                // Release its held resources
+                for (auto& res : processes[pid].heldResources) {
+                    tempRes[res.first].availableInstances += res.second;
+                }
+            } else {
+                newRemaining.push_back(pid);
+            }
+        }
+        remaining = newRemaining;
+    }
+
+    // Processes still in remaining are deadlocked
+    if (!remaining.empty()) {
+        deadlockedPIDs = remaining;
+        return true;
+    }
+
+    return false;
+}
+
+void recoverFromDeadlock(vector<int>& deadlockedPIDs) {
+    cout << "\n========== DEADLOCK DETECTED at Time " << currentTime << " ==========\n";
+    cout << "Deadlocked processes: ";
+    for (int pid : deadlockedPIDs) {
+        cout << "P" << pid << " ";
+    }
+    cout << endl;
+
+    // Find victim (lowest priority = highest priority number)
+    int victim = deadlockedPIDs[0];
+    int lowestPriority = processes[victim].priority;
+
+    for (int pid : deadlockedPIDs) {
+        if (processes[pid].priority > lowestPriority) {
+            lowestPriority = processes[pid].priority;
+            victim = pid;
+        }
+    }
+
+    cout << "RECOVERY: Terminating P" << victim << " (Priority " << lowestPriority << ")\n";
+
+    // Release all resources
+    for (auto& res : processes[victim].heldResources) {
+        resources[res.first].availableInstances += res.second;
+        cout << "Released " << res.second << " instances of R" << res.first << endl;
+    }
+    processes[victim].heldResources.clear();
+
+    // Terminate process
+    processes[victim].state = "TERMINATED";
+    processes[victim].completionTime = currentTime;
+
+    // Remove from waiting queue
+    waitingQueue.erase(remove(waitingQueue.begin(), waitingQueue.end(), victim), waitingQueue.end());
+
+    cout << "========== DEADLOCK RECOVERY COMPLETE ==========\n\n";
+}
+
+// ==================== RESOURCE MANAGEMENT ====================
+
+bool requestResource(int pid, int resourceID, int amount) {
+    if (resources[resourceID].availableInstances >= amount) {
+        resources[resourceID].availableInstances -= amount;
+        processes[pid].heldResources[resourceID] += amount;
+        cout << "[Time " << currentTime << "] P" << pid << " acquired "
+             << amount << " instances of R" << resourceID << endl;
+        return true;
+    }
+
+    cout << "[Time " << currentTime << "] P" << pid << " waiting for "
+         << amount << " instances of R" << resourceID
+         << " (Available: " << resources[resourceID].availableInstances << ")" << endl;
+    processes[pid].waitingForResource = resourceID;
+    processes[pid].waitingForAmount = amount;
+    return false;
+}
+
+void releaseResource(int pid, int resourceID, int amount) {
+    if (processes[pid].heldResources[resourceID] >= amount) {
+        processes[pid].heldResources[resourceID] -= amount;
+        resources[resourceID].availableInstances += amount;
+        cout << "[Time " << currentTime << "] P" << pid << " released "
+             << amount << " instances of R" << resourceID << endl;
+    }
+}
+
+// ==================== SCHEDULING FUNCTIONS ====================
+
+void applyAging() {
+    for (int& pid : readyQueue) {
+        processes[pid].timeInReadyQueue++;
+
+        if (processes[pid].timeInReadyQueue >= AGING_THRESHOLD &&
+            processes[pid].priority > 0) {
+            processes[pid].priority--;
+            processes[pid].timeInReadyQueue = 0;
+            cout << "[Time " << currentTime << "] AGING: P" << pid
+                 << " priority decreased to " << processes[pid].priority << endl;
+        }
+    }
+}
+
+int selectNextProcess() {
+    if (readyQueue.empty()) return -1;
+
+    // Find highest priority process
+    int bestIdx = 0;
+    int bestPriority = processes[readyQueue[0]].priority;
+
+    for (int i = 1; i < readyQueue.size(); i++) {
+        if (processes[readyQueue[i]].priority < bestPriority) {
+            bestPriority = processes[readyQueue[i]].priority;
+            bestIdx = i;
+        }
+    }
+
+    // Remove and return
+    int pid = readyQueue[bestIdx];
+    readyQueue.erase(readyQueue.begin() + bestIdx);
+    return pid;
+}
+
+void executeProcess() {
+    if (currentProcess == -1) return;
+
+    Process& p = processes[currentProcess];
+
+    // Check if process finished
+    if (p.currentBurstIndex >= p.bursts.size()) {
+        p.state = "TERMINATED";
+        p.completionTime = currentTime;
+
+        // Release all resources
+        for (auto& res : p.heldResources) {
+            resources[res.first].availableInstances += res.second;
+        }
+        p.heldResources.clear();
+
+        cout << "[Time " << currentTime << "] P" << p.pid << " TERMINATED\n";
+        currentProcess = -1;
+        return;
+    }
+
+    Burst& currentBurst = p.bursts[p.currentBurstIndex];
+
+    // If IO burst, shouldn't be here
+    if (!currentBurst.isCPU) return;
+
+    // Check if current burst finished
+    if (p.currentOperationIndex >= currentBurst.operations.size()) {
+        p.currentBurstIndex++;
+        p.currentOperationIndex = 0;
+        p.remainingTime = 0;
+
+        // Check next burst
+        if (p.currentBurstIndex < p.bursts.size()) {
+            if (!p.bursts[p.currentBurstIndex].isCPU) {
+                // Move to IO
+                p.state = "IO";
+                ioQueue.push_back(p.pid);
+                p.remainingTime = p.bursts[p.currentBurstIndex].operations[0].duration;
+                cout << "[Time " << currentTime << "] P" << p.pid
+                     << " moved to IO (duration " << p.remainingTime << ")\n";
+                currentProcess = -1;
+            }
+        } else {
+            // Process finished
+            p.state = "TERMINATED";
+            p.completionTime = currentTime;
+
+            for (auto& res : p.heldResources) {
+                resources[res.first].availableInstances += res.second;
+            }
+            p.heldResources.clear();
+
+            cout << "[Time " << currentTime << "] P" << p.pid << " TERMINATED\n";
+            currentProcess = -1;
+        }
+        return;
+    }
+
+    // Execute current operation
+    Operation& op = currentBurst.operations[p.currentOperationIndex];
+
+    if (op.type == "REQUEST") {
+        if (requestResource(p.pid, op.resourceID, op.amount)) {
+            p.currentOperationIndex++;
+        } else {
+            // Move to waiting queue
+            p.state = "WAITING";
+            waitingQueue.push_back(p.pid);
+            currentProcess = -1;
+        }
+    } else if (op.type == "RELEASE") {
+        releaseResource(p.pid, op.resourceID, op.amount);
+        p.currentOperationIndex++;
+    } else if (op.type == "EXEC") {
+        if (p.remainingTime == 0) {
+            p.remainingTime = op.duration;
+        }
+        p.remainingTime--;
+
+        if (p.remainingTime == 0) {
+            p.currentOperationIndex++;
+        }
+    }
+}
+
+void processIO() {
+    vector<int> stillInIO;
+
+    for (int pid : ioQueue) {
+        processes[pid].remainingTime--;
+
+        if (processes[pid].remainingTime == 0) {
+            // IO finished
+            processes[pid].currentBurstIndex++;
+            processes[pid].currentOperationIndex = 0;
+
+            if (processes[pid].currentBurstIndex < processes[pid].bursts.size()) {
+                processes[pid].state = "READY";
+                readyQueue.push_back(pid);
+                cout << "[Time " << currentTime << "] P" << pid
+                     << " IO completed, moved to READY\n";
+            }
+        } else {
+            stillInIO.push_back(pid);
+        }
+    }
+
+    ioQueue = stillInIO;
+}
+
+void processWaiting() {
+    vector<int> stillWaiting;
+
+    for (int pid : waitingQueue) {
+        Process& p = processes[pid];
+
+        if (p.waitingForResource != -1) {
+            if (resources[p.waitingForResource].availableInstances >= p.waitingForAmount) {
+                // Resource available
+                resources[p.waitingForResource].availableInstances -= p.waitingForAmount;
+                p.heldResources[p.waitingForResource] += p.waitingForAmount;
+
+                cout << "[Time " << currentTime << "] P" << pid
+                     << " acquired waited resource R" << p.waitingForResource << endl;
+
+                p.waitingForResource = -1;
+                p.waitingForAmount = 0;
+                p.currentOperationIndex++;
+
+                p.state = "READY";
+                readyQueue.push_back(pid);
+            } else {
+                stillWaiting.push_back(pid);
+            }
+        } else {
+            stillWaiting.push_back(pid);
+        }
+    }
+
+    waitingQueue = stillWaiting;
+}
+
+void checkNewArrivals() {
+    for (int i = 0; i < processes.size(); i++) {
+        if (processes[i].state == "NEW" && processes[i].arrivalTime <= currentTime) {
+            processes[i].state = "READY";
+            readyQueue.push_back(i);
+            cout << "[Time " << currentTime << "] P" << i << " arrived (Priority "
+                 << processes[i].priority << ")\n";
+        }
+    }
+}
+
+// ==================== INPUT PARSING ====================
+
+void parseInput(const string& filename) {
+    ifstream file(filename);
+    if (!file.is_open()) {
+        cerr << "Error: Cannot open file " << filename << endl;
+        exit(1);
+    }
+
+    string line;
+
+    // Parse resources
+    getline(file, line);
+    stringstream ss(line);
+    char ch;
+
+    while (ss >> ch) {
+        if (ch == '[') {
+            int id, instances;
+            ss >> id >> ch >> instances >> ch;
+            Resource r;
+            r.totalInstances = instances;
+            r.availableInstances = instances;
+            resources[id] = r;
+        }
+    }
+
+    // Parse processes
+    while (getline(file, line)) {
+        if (line.empty()) continue;
+
+        Process p;
+        p.state = "NEW";
+        p.currentBurstIndex = 0;
+        p.currentOperationIndex = 0;
+        p.remainingTime = 0;
+        p.timeInReadyQueue = 0;
+        p.startTime = -1;
+        p.completionTime = 0;
+        p.waitingForResource = -1;
+        p.waitingForAmount = 0;
+
+        stringstream lineStream(line);
+        lineStream >> p.pid >> p.arrivalTime >> p.priority;
+        p.originalPriority = p.priority;
+
+        // Parse bursts
+        string token;
+        while (lineStream >> token) {
+            if (token.find("CPU") == 0) {
+                Burst burst;
+                burst.isCPU = true;
+
+                size_t start = token.find('{');
+                size_t end = token.find('}');
+                string content = token.substr(start + 1, end - start - 1);
+
+                // Parse operations
+                vector<string> items;
+                string item;
+                int depth = 0;
+
+                for (char c : content) {
+                    if (c == '[') {
+                        depth++;
+                        item += c;
+                    } else if (c == ']') {
+                        depth--;
+                        item += c;
+                    } else if (c == ',' && depth == 0) {
+                        items.push_back(item);
+                        item.clear();
+                    } else if (c != ' ' || !item.empty()) {
+                        item += c;
+                    }
+                }
+                if (!item.empty()) items.push_back(item);
+
+                for (string& item : items) {
+                    // Trim
+                    item.erase(0, item.find_first_not_of(" \t"));
+                    item.erase(item.find_last_not_of(" \t") + 1);
+
+                    if (item.empty()) continue;
+
+                    Operation op;
+
+                    if (item[0] == 'R') {
+                        op.type = "REQUEST";
+                        size_t s = item.find('[');
+                        size_t e = item.find(']');
+                        string params = item.substr(s + 1, e - s - 1);
+                        stringstream ps(params);
+                        char comma;
+                        ps >> op.resourceID >> comma >> op.amount;
+                        op.duration = 0;
+                    } else if (item[0] == 'F') {
+                        op.type = "RELEASE";
+                        size_t s = item.find('[');
+                        size_t e = item.find(']');
+                        string params = item.substr(s + 1, e - s - 1);
+                        stringstream ps(params);
+                        char comma;
+                        ps >> op.resourceID >> comma >> op.amount;
+                        op.duration = 0;
+                    } else {
+                        op.type = "EXEC";
+                        op.duration = stoi(item);
+                        op.resourceID = 0;
+                        op.amount = 0;
+                    }
+
+                    burst.operations.push_back(op);
+                }
+
+                p.bursts.push_back(burst);
+
+            } else if (token.find("IO") == 0) {
+                Burst burst;
+                burst.isCPU = false;
+
+                size_t start = token.find('{');
+                size_t end = token.find('}');
+                string duration = token.substr(start + 1, end - start - 1);
+
+                Operation op;
+                op.type = "EXEC";
+                op.duration = stoi(duration);
+                op.resourceID = 0;
+                op.amount = 0;
+
+                burst.operations.push_back(op);
+                p.bursts.push_back(burst);
+            }
+        }
+
+        processes.push_back(p);
+    }
+
+    file.close();
+}
+
+// ==================== OUTPUT FUNCTIONS ====================
+
+void printGanttChart() {
+    cout << "\n========== GANTT CHART ==========\n";
+
+    if (ganttChart.empty()) {
+        cout << "No processes executed.\n";
+        return;
+    }
+
+    cout << "|";
+    for (const auto& entry : ganttChart) {
+        cout << " P" << entry.pid << " |";
+    }
+    cout << "\n";
+
+    cout << "0";
+    for (const auto& entry : ganttChart) {
+        cout << "    " << entry.endTime;
+    }
+    cout << "\n";
+}
+
+void printStatistics() {
+    cout << "\n========== STATISTICS ==========\n";
+
+    double totalWaiting = 0;
+    double totalTurnaround = 0;
+    int completed = 0;
+
+    for (auto& p : processes) {
+        if (p.state == "TERMINATED" && p.completionTime > 0) {
+            int turnaroundTime = p.completionTime - p.arrivalTime;
+
+            // Calculate CPU time
+            int cpuTime = 0;
+            for (const auto& burst : p.bursts) {
+                if (burst.isCPU) {
+                    for (const auto& op : burst.operations) {
+                        if (op.type == "EXEC") {
+                            cpuTime += op.duration;
+                        }
+                    }
+                }
+            }
+
+            int waitingTime = turnaroundTime - cpuTime;
+
+            totalWaiting += waitingTime;
+            totalTurnaround += turnaroundTime;
+            completed++;
+
+            cout << "Process P" << p.pid << ":\n";
+            cout << "  Arrival: " << p.arrivalTime << "\n";
+            cout << "  Completion: " << p.completionTime << "\n";
+            cout << "  Turnaround: " << turnaroundTime << "\n";
+            cout << "  Waiting: " << waitingTime << "\n";
+        }
+    }
+
+    if (completed > 0) {
+        cout << "\nAverage Waiting Time: " << (totalWaiting / completed) << "\n";
+        cout << "Average Turnaround Time: " << (totalTurnaround / completed) << "\n";
+    }
+}
+
+// ==================== MAIN SIMULATION ====================
+
+void simulate() {
+    cout << "\n========== SIMULATION START ==========\n\n";
+
+    int timeSlice = 0;
+    int ganttStart = 0;
+    int lastPID = -1;
+
+    while (true) {
+        // Check arrivals
+        checkNewArrivals();
+
+        // Process IO
+        processIO();
+
+        // Process waiting
+        processWaiting();
+
+        // Deadlock detection
+        if (currentTime % 5 == 0 && currentTime > 0) {
+            vector<int> deadlocked;
+            if (detectDeadlock(deadlocked)) {
+                recoverFromDeadlock(deadlocked);
+                processWaiting();
+            }
+        }
+
+        // Apply aging
+        if (currentTime % 1 == 0 && !readyQueue.empty()) {
+            applyAging();
+        }
+
+        // Select process
+        if (currentProcess == -1) {
+            currentProcess = selectNextProcess();
+            timeSlice = 0;
+
+            if (currentProcess != -1) {
+                processes[currentProcess].state = "RUNNING";
+                if (processes[currentProcess].startTime == -1) {
+                    processes[currentProcess].startTime = currentTime;
+                }
+                cout << "[Time " << currentTime << "] P" << currentProcess << " started/resumed\n";
+            }
+        }
+
+        // Execute
+        if (currentProcess != -1) {
+            if (lastPID != currentProcess) {
+                if (lastPID != -1) {
+                    GanttEntry entry;
+                    entry.pid = lastPID;
+                    entry.startTime = ganttStart;
+                    entry.endTime = currentTime;
+                    ganttChart.push_back(entry);
+                }
+                ganttStart = currentTime;
+                lastPID = currentProcess;
+            }
+
+            executeProcess();
+            timeSlice++;
+
+            // Round robin preemption
+            if (currentProcess != -1 && timeSlice >= TIME_QUANTUM) {
+                bool shouldPreempt = false;
+                for (int pid : readyQueue) {
+                    if (processes[pid].priority <= processes[currentProcess].priority) {
+                        shouldPreempt = true;
+                        break;
+                    }
+                }
+
+                if (shouldPreempt && processes[currentProcess].state == "RUNNING") {
+                    cout << "[Time " << currentTime << "] Time quantum expired for P"
+                         << currentProcess << ", preempting\n";
+                    processes[currentProcess].state = "READY";
+                    readyQueue.push_back(currentProcess);
+                    currentProcess = -1;
+                    timeSlice = 0;
+                }
+            }
+        }
+
+        // Check if done
+        bool allDone = true;
+        for (const auto& p : processes) {
+            if (p.state != "TERMINATED") {
+                allDone = false;
+                break;
+            }
+        }
+
+        if (allDone) {
+            if (lastPID != -1) {
+                GanttEntry entry;
+                entry.pid = lastPID;
+                entry.startTime = ganttStart;
+                entry.endTime = currentTime;
+                ganttChart.push_back(entry);
+            }
+            break;
+        }
+
+        currentTime++;
+
+        if (currentTime > 10000) {
+            cout << "Simulation timeout\n";
+            break;
+        }
+    }
+
+    cout << "\n========== SIMULATION END ==========\n";
+}
+
+// ==================== MAIN ====================
+
+int main(int argc, char* argv[]) {
+    string filename = "inputFile.txt";
+
+    if (argc > 1) {
+        filename = argv[1];
+    }
+
+    cout << "Simple CPU Scheduler Simulation (No OOP)\n";
+    cout << "=========================================\n";
+    cout << "Reading: " << filename << "\n";
+
+    parseInput(filename);
+
+    cout << "\nResources:\n";
+    for (const auto& r : resources) {
+        cout << "  R" << r.first << ": " << r.second.totalInstances << " instances\n";
+    }
+
+    cout << "\nProcesses: " << processes.size() << "\n";
+    for (const auto& p : processes) {
+        cout << "  P" << p.pid << " arrives at " << p.arrivalTime
+             << " with priority " << p.priority << "\n";
+    }
+
+    simulate();
+    printGanttChart();
+    printStatistics();
+
+    return 0;
+}
+
+
+
+================================================================================
+  SAMPLE INPUT FILE (NO DEADLOCK)
+  File: input_no_deadlock.txt
+================================================================================
+
+[1,5], [2,3], [3,2]
+0 0 1 CPU{R[1,2],30,F[1,2],10}
+1 2 2 CPU{20} IO{15} CPU{R[2,1],25,F[2,1],10}
+2 5 3 CPU{10} IO{10} CPU{R[3,1],20,F[3,1],15} IO{10} CPU{10}
+3 8 1 CPU{R[1,1],15,F[1,1],10} IO{20} CPU{R[2,2],20,F[2,2],10}
+4 10 4 CPU{5} IO{10} CPU{R[1,2],30,F[1,2],15} IO{5} CPU{10}
+
+
+
+================================================================================
+  SAMPLE INPUT FILE (WITH DEADLOCK)
+  File: input_with_deadlock.txt
+================================================================================
+
+[1,2], [2,2], [3,1]
+0 0 1 CPU{R[1,2],20,R[2,1],30,F[2,1],10,F[1,2],10}
+1 1 1 CPU{R[2,2],20,R[1,1],30,F[1,1],10,F[2,2],10}
+2 5 2 CPU{10} IO{15} CPU{R[3,1],20,F[3,1],10}
+3 8 3 CPU{5} IO{10} CPU{15}
+4 12 2 CPU{20} IO{10} CPU{10}
+
+
+
+================================================================================
+  COMPILATION AND USAGE INSTRUCTIONS
+================================================================================
+
+COMPILE:
+  g++ -o simple_scheduler simple_scheduler.cpp -std=c++11
+
+RUN:
+  ./simple_scheduler input_no_deadlock.txt
+  ./simple_scheduler input_with_deadlock.txt
+
