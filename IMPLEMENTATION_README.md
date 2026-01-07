@@ -1,6 +1,19 @@
 # CPU Scheduler Simulation with Deadlock Detection
 
-A simple C++ implementation of a CPU scheduling system with deadlock detection and recovery for Operating Systems course (ENCS3390).
+C++ implementations of a CPU scheduling system with deadlock detection and recovery for Operating Systems course (ENCS3390).
+
+## Two Versions Available
+
+### 1. **simple_scheduler.cpp** (RECOMMENDED FOR STUDENTS)
+- ✅ **No OOP** - Uses simple structs and functions only
+- ✅ **Single file** - All code in one .cpp file
+- ✅ **Easy to understand** - Procedural programming style
+- ✅ **Well commented** - Clear explanation of each section
+
+### 2. **scheduler_simulation.cpp** (Advanced)
+- Uses classes and OOP principles
+- More modular structure
+- Better for larger projects
 
 ## Features
 
@@ -15,19 +28,26 @@ A simple C++ implementation of a CPU scheduling system with deadlock detection a
 
 ## Compilation
 
+**Simple version (recommended):**
+```bash
+g++ -o simple_scheduler simple_scheduler.cpp -std=c++11
+```
+
+**Advanced version:**
 ```bash
 g++ -o scheduler scheduler_simulation.cpp -std=c++11
 ```
 
-Or with optimization:
-
-```bash
-g++ -o scheduler scheduler_simulation.cpp -std=c++11 -O2
-```
-
 ## Usage
 
-Run with default input file (inputFile.txt):
+**Simple version:**
+```bash
+./simple_scheduler test_simple.txt
+./simple_scheduler input_no_deadlock.txt
+./simple_scheduler input_with_deadlock.txt
+```
+
+**Advanced version:**
 ```bash
 ./scheduler
 ```
